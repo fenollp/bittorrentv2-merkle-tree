@@ -1,5 +1,12 @@
 package main
 
+//bloom filter instead of map[string]bckt
+//progress bar for loop when totalsize known
+//blocksize align file = right pad
+//count packets in common on a folder
+////tar dir/ --with-option-that-aligns-files-- | go run split.go -- -
+//concurrent file processing
+
 import (
 	"bufio"
 	"crypto/sha256"
@@ -48,7 +55,7 @@ func actual() error {
 	r := bufio.NewReader(fd)
 	for k := int64(0); true; k += blockSize {
 		if err := func() error {
-			log.Printf("k = %d", k)
+			// log.Printf("k = %d", k)
 			data := make([]byte, blockSize)
 
 			// n, err := r.ReadAt(data[:], k)
