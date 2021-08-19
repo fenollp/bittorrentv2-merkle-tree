@@ -43,6 +43,9 @@ func actual() (err error) {
 		if fi, err = fd.Stat(); err != nil {
 			return
 		}
+		if fi.IsDir() || !fi.Mode().IsRegular() {
+			continue
+		}
 		expectingChunks := fi.Size() / blockSize
 		fmt.Println(fn, "\n  Blocks:", expectingChunks)
 		totalBlocks += expectingChunks
