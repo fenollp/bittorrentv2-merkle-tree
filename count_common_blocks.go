@@ -11,7 +11,6 @@ import (
 	"os"
 	"runtime"
 	"sync/atomic"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -30,7 +29,6 @@ func actual() (err error) {
 		err = errors.New("Usage: $0 <FILE>+")
 		return
 	}
-
 	fmt.Println("Using block size:", blockSize, "bytes")
 
 	var totalBlocks int64
@@ -52,48 +50,36 @@ func actual() (err error) {
 	}
 	fmt.Println("Files:", len(fds))
 
-	chBytes := make(chan []byte)
-	chHash := make(chan string)
-
 	ctx := context.TODO()
 	g, ctx := errgroup.WithContext(ctx)
 
-	counts := make(map[string]uint, totalBlocks)
-
-	maxProcs := runtime.GOMAXPROCS(0)
-	if maxProcs > 1 {
-		maxProcs-- // Reading 1 file blocks 1 OS thread, so leave some room.
-	}
-	streamers := semaphore.NewWeighted(int64(maxProcs))
-
 	var aFDs uint32
-	g.Go(func() error {
-		for {
-			select {
-			case <-time.After(50 * time.Millisecond):
-				if done := atomic.LoadUint32(&aFDs); int(done) == len(fds) {
-					log.Println("close(chBytes)")
-					close(chBytes)
-					return nil
-				}
-			}
+	chHash := make(chan string)
+	counts := make(map[string]uint, totalBlocks)
+	streamers := semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
+
+	tryClosing := func() {
+		if done := atomic.LoadUint32(&aFDs); int(done) == len(fds) {
+			log.Println("close(chHash)", done)
+			close(chHash)
 		}
-	})
+	}
 
 	for n, fd := range fds {
-		n := n
+		n, fd := n, fd
 		g.Go(func() error {
 			defer func() {
 				log.Println("streamed", n)
-				streamers.Release(1)
 				atomic.AddUint32(&aFDs, 1)
+				go tryClosing()
 			}()
 			if err := streamers.Acquire(ctx, 1); err != nil {
 				return err
 			}
+			defer streamers.Release(1)
 			r := bufio.NewReader(fd)
+			buf := make([]byte, 0, blockSize)
 			for {
-				buf := make([]byte, 0, blockSize)
 				n, err := r.Read(buf[:cap(buf)])
 				buf = buf[:n]
 				if n == 0 {
@@ -111,7 +97,7 @@ func actual() (err error) {
 				if err != nil && err != io.EOF {
 					return err
 				}
-				chBytes <- buf
+				chHash <- fmt.Sprintf("%x", sha256.Sum256(buf))
 			}
 			return nil
 		})
@@ -120,41 +106,9 @@ func actual() (err error) {
 	g.Go(func() error {
 		for h := range chHash {
 			counts[h]++
-			// log.Println(h, len(counts))
 		}
 		return nil
 	})
-
-	maxHashers := maxProcs / 3
-	var aHashers uint32
-	g.Go(func() error {
-		for {
-			select {
-			case <-time.After(50 * time.Millisecond):
-				if done := atomic.LoadUint32(&aHashers); int(done) == maxHashers {
-					log.Println("close(chHash)")
-					close(chHash)
-					return nil
-				}
-			}
-		}
-	})
-
-	for n := range make([]struct{}, maxHashers) {
-		n := n
-		g.Go(func() error {
-			defer func() {
-				log.Println("ending hasher", n)
-				atomic.AddUint32(&aHashers, 1)
-			}()
-			for b := range chBytes {
-				h := sha256.New()
-				h.Write(b)
-				chHash <- fmt.Sprintf("%x", h.Sum(nil))
-			}
-			return nil
-		})
-	}
 
 	if err = g.Wait(); err != nil {
 		return err
