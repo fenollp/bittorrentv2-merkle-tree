@@ -39,6 +39,7 @@ func actual() (err error) {
 			return
 		}
 		defer fd.Close()
+
 		var fi os.FileInfo
 		if fi, err = fd.Stat(); err != nil {
 			return
@@ -46,9 +47,10 @@ func actual() (err error) {
 		if fi.IsDir() || !fi.Mode().IsRegular() {
 			continue
 		}
-		expectingChunks := fi.Size() / blockSize
-		fmt.Println(fn, "\n  Blocks:", expectingChunks)
-		totalBlocks += expectingChunks
+
+		blocks := fi.Size() / blockSize
+		fmt.Println(fn, "\n  Blocks:", blocks)
+		totalBlocks += blocks
 		fds = append(fds, fd)
 	}
 	fmt.Println("Files:", len(fds))
@@ -61,25 +63,22 @@ func actual() (err error) {
 	counts := make(map[string]uint, totalBlocks)
 	streamers := semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
 
-	tryClosing := func() {
-		if done := atomic.LoadUint32(&aFDs); int(done) == len(fds) {
-			log.Println("close(chHash)", done)
-			close(chHash)
-		}
-	}
-
 	for n, fd := range fds {
 		n, fd := n, fd
 		g.Go(func() error {
 			defer func() {
 				log.Println("streamed", n)
-				atomic.AddUint32(&aFDs, 1)
-				go tryClosing()
+				if done := atomic.AddUint32(&aFDs, 1); int(done) == len(fds) {
+					log.Println("close(chHash)", done)
+					close(chHash)
+				}
 			}()
+
 			if err := streamers.Acquire(ctx, 1); err != nil {
 				return err
 			}
 			defer streamers.Release(1)
+
 			r := bufio.NewReader(fd)
 			buf := make([]byte, 0, blockSize)
 			for {
@@ -114,7 +113,7 @@ func actual() (err error) {
 	})
 
 	if err = g.Wait(); err != nil {
-		return err
+		return
 	}
 
 	fmt.Println("")
